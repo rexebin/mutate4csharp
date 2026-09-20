@@ -44,7 +44,13 @@ public sealed class ProcessCommandExecutor : ICommandExecutor
 
         long start = Stopwatch.GetTimestamp();
         using Process process = StartProcess(command, workingDirectory);
+
+        // CA2025 false positive: outputTask reads process.Standard{Output,Error}, but ReadOutput
+        // below blocks until it completes (the process has already exited by then, per WaitFor),
+        // so the task is always drained before `process` is disposed at method exit.
+#pragma warning disable CA2025
         Task<string> outputTask = _support.BeginReadOutput(process);
+#pragma warning restore CA2025
         bool timedOut = !_support.WaitFor(process, timeoutMillis);
         int exitCode = _support.ExitCode(process, timedOut);
         string output = _support.ReadOutput(outputTask);

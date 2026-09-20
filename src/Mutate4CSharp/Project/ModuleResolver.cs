@@ -93,15 +93,17 @@ public sealed class ModuleResolver
         string testName = projectName + ".Tests.csproj";
         string unitTestName = projectName + ".UnitTests.csproj";
 
-        List<string> candidates = EnumerateProjectFiles()
-            .Where(path =>
-            {
-                string name = Path.GetFileName(path);
-                return string.Equals(name, testName, PathComparison)
-                    || string.Equals(name, unitTestName, PathComparison);
-            })
-            .Where(path => ReferencesTransitively(path, projectFile))
-            .ToList();
+        List<string> candidates =
+        [
+            .. EnumerateProjectFiles()
+                .Where(path =>
+                {
+                    string name = Path.GetFileName(path);
+                    return string.Equals(name, testName, PathComparison)
+                        || string.Equals(name, unitTestName, PathComparison);
+                })
+                .Where(path => ReferencesTransitively(path, projectFile)),
+        ];
 
         if (candidates.Count == 0)
         {
