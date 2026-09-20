@@ -67,9 +67,11 @@ public sealed class DifferentialSelector
         // its default, they are conservative-selected (treated as changed) rather than silently
         // dropped — the S3 carry-forward from Anders' T7 review. In a target with no file: sites (the
         // only shape mutate4java ever sees) this reduces to Java's exact behaviour.
-        List<MutationSite> selected = analysis.Sites
-            .Where(site => allScopeIds.Contains(site.ScopeId) || IsFileFallbackScope(site.ScopeId))
-            .ToList();
+        List<MutationSite> selected =
+        [
+            .. analysis.Sites
+                .Where(site => allScopeIds.Contains(site.ScopeId) || IsFileFallbackScope(site.ScopeId)),
+        ];
 
         // Faithful to Java, the module is reported unchanged only when the manifest is present and
         // nothing is selected; conservative-selected file: sites keep it from being reported unchanged.

@@ -85,9 +85,11 @@ public sealed class ExecutionMessagesTests
 
     private static List<MutationSite> Sites(int count)
     {
-        return Enumerable.Range(1, count)
-            .Select(line => new MutationSite("Sample.cs", line, 0, 1, "a", "b", "desc"))
-            .ToList();
+        return
+        [
+            .. Enumerable.Range(1, count)
+                .Select(line => new MutationSite("Sample.cs", line, 0, 1, "a", "b", "desc")),
+        ];
     }
 
     private static CliArguments Args(int mutationWarning)

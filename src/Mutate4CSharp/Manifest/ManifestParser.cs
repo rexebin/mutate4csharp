@@ -36,10 +36,12 @@ public sealed class ManifestParser
             }
         }
 
-        List<MutationScope> parsedScopes = scopes
-            .OrderBy(entry => entry.Key)
-            .Select(entry => ToScope(entry.Value))
-            .ToList();
+        List<MutationScope> parsedScopes =
+        [
+            .. scopes
+                .OrderBy(entry => entry.Key)
+                .Select(entry => ToScope(entry.Value)),
+        ];
         return new DifferentialManifest(version, moduleHash, parsedScopes);
     }
 

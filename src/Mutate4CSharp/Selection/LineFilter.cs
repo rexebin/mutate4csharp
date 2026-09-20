@@ -24,6 +24,6 @@ public sealed class LineFilter
             return sites;
         }
 
-        return sites.Where(site => lines.Contains(site.LineNumber)).ToList();
+        return [.. sites.Where(site => lines.Contains(site.LineNumber))];
     }
 }

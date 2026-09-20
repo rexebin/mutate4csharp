@@ -30,10 +30,12 @@ public static class SourceFileFinder
         }
 
         EnumerationOptions options = new() { RecurseSubdirectories = true, IgnoreInaccessible = true };
-        List<string> files = Directory.EnumerateFiles(src, "*", options)
-            .Where(path => path.EndsWith(".cs", PathComparison))
-            .Where(path => !IsUnderBuildOutput(src, path))
-            .ToList();
+        List<string> files =
+        [
+            .. Directory.EnumerateFiles(src, "*", options)
+                .Where(path => path.EndsWith(".cs", PathComparison))
+                .Where(path => !IsUnderBuildOutput(src, path)),
+        ];
         files.Sort(StringComparer.Ordinal);
         return files;
     }

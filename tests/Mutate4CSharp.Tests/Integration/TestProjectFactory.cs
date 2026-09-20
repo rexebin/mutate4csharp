@@ -24,7 +24,7 @@ namespace Microsoft.Mutate4CSharp.Tests.Integration;
 public sealed class TestProjectFactory
 {
     /// <summary>The target framework every generated project builds against.</summary>
-    public const string TargetFramework = "net8.0";
+    public const string TargetFramework = "net10.0";
 
     /// <summary>The pinned <c>Microsoft.NET.Test.Sdk</c> version (matches the tests' common targets).</summary>
     public const string TestSdkVersion = "17.8.0";
@@ -142,6 +142,7 @@ public sealed class TestProjectFactory
     {
         string root = Path.Combine(Path.GetTempPath(), "mutate4csharp-sample", Guid.NewGuid().ToString("N"));
         Directory.CreateDirectory(root);
+        root = ResolveRealPath(root);
         WriteHermeticGuards(root);
 
         string projectDirectory = Path.Combine(root, _projectName);
@@ -190,6 +191,32 @@ public sealed class TestProjectFactory
         File.WriteAllText(Path.Combine(root, "Directory.Build.props"), "<Project />");
         File.WriteAllText(Path.Combine(root, "Directory.Build.targets"), "<Project />");
         File.WriteAllText(Path.Combine(root, "nuget.config"), NuGetConfig);
+    }
+
+    /// <summary>
+    /// Canonicalizes <paramref name="path"/> the way MSBuild/Roslyn do when they embed source paths
+    /// in a compiled PDB: <c>Path.GetTempPath()</c> on macOS returns a path under <c>/var/...</c>,
+    /// but <c>/var</c> is itself a symlink to <c>/private/var</c>, and the compiler records the
+    /// resolved <c>/private/var/...</c> form. <see cref="Path.GetFullPath(string)"/> does not
+    /// resolve symlinks, so without this the A4 key built from the un-resolved temp path would never
+    /// match a real coverlet report's <c>filename</c>. Chdir+getcwd is the portable way to obtain
+    /// the OS-canonicalized form; it is safe here only because <c>[Collection("Integration")]</c>
+    /// (<see cref="IntegrationCollectionDefinition"/>) disables parallelization for these tests.
+    /// </summary>
+    /// <param name="path">The path to canonicalize.</param>
+    /// <returns>The symlink-resolved absolute path.</returns>
+    private static string ResolveRealPath(string path)
+    {
+        string previousDirectory = Directory.GetCurrentDirectory();
+        try
+        {
+            Directory.SetCurrentDirectory(path);
+            return Directory.GetCurrentDirectory();
+        }
+        finally
+        {
+            Directory.SetCurrentDirectory(previousDirectory);
+        }
     }
 
     private static void WriteFiles(
