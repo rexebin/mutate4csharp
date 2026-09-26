@@ -43,7 +43,7 @@ authoritative behavioral contract is the read-only `../mutate4java` (`spec.md` +
 ## Deliberate departures from mutate4java (approved by Mr. Das)
 
 Default stance is **zero** behavioral departures; the CRAP-era departures do **not** apply (this is a
-mutation tool, not a complexity/CRAP analyzer). The following five are approved:
+mutation tool, not a complexity/CRAP analyzer). The following six are approved:
 
 1. **DD1 — C#-specific manifest scope kinds.** Java's 3 kinds (`class/method/field`) widen to a C#
    taxonomy (type flavors + `constructor/finalizer/operator/conversion-operator/local-function/
@@ -91,9 +91,26 @@ mutation tool, not a complexity/CRAP analyzer). The following five are approved:
    drops a site, but only on code that wouldn't compile under the project's real global usings anyway.
    Surfaced by the S8 dogfood; **enriching references (project/NuGet) is explicitly rejected** as *less*
    faithful than Java's empty application classpath. No report-string or exit-code change.
+6. **DD6 — Test-project auto-discovery (amends DD2(a)/DD3's naming requirement).** The
+   `<Project>.Tests`/`.UnitTests` name is no longer required. After tier 1 (the convention, unchanged
+   with its proximity tie-break), a **marked** test project that transitively references the owner is
+   accepted: tier 2 = named `<Project>.*` (e.g. `Foo.BlackBoxTests`, `Foo.Specs`), tier 3 = any.
+   **Marked** = an **unconditioned** `<IsTestProject>true</IsTestProject>` or `<PackageReference
+   Include="Microsoft.NET.Test.Sdk">` in the `.csproj`, a `Directory.Build.props`/`.targets` up to the
+   workspace root, or any file those `<Import>` (recursive, cycle-safe, bounded to the workspace).
+   Import paths expand only `$(MSBuildThisFileDirectory)` (of the importing file) and
+   `$(MSBuildProjectDirectory)`; any other `$(...)` skips that import, a conditioned marker is ignored,
+   and a malformed file contributes nothing (all fail-safe → at worst exit 2, never a wrong pick). **>1
+   candidate at tier 2 or 3 → exit 2** with a `Multiple test projects` stderr line — deliberately the
+   same rule as crap4csharp's departure #16, so the two tools always resolve the **same** test project
+   for a file, or both refuse. `--test-command` does not bypass resolution. DD3's filter
+   (`type!=IntegrationTests&Category!=no-mutate`) is unchanged: untagged in-process blackbox tests run;
+   Gherkin/E2E suites tagged `IntegrationTests` stay excluded. No stdout report-string change; one new
+   stderr line. (Ruled by Mr. Das: tiers as crap4csharp; ambiguity → fail-fast, option A.)
 
-Exit code `2` is therefore **broadened** to "baseline failed **OR** no unit-test project **OR** zero
-unit tests executed" — three sub-reasons documented under one code, keeping the `0/1/2/3` contract.
+Exit code `2` is therefore **broadened** to "baseline failed **OR** no unit-test project **OR**
+ambiguous test project **OR** zero unit tests executed" — four sub-reasons documented under one code,
+keeping the `0/1/2/3` contract.
 All stdout report strings are unchanged; DD2 adds **stderr** lines only.
 
 **Fidelity principle — stdout verbatim, stderr adapted.** Only **stdout report strings** carry the
@@ -148,10 +165,12 @@ node's source text; `startLine`/`endLine` from Roslyn line mapping. `addScope` d
 - **`<Project>` derivation:** ascend from the target `.cs` file to the nearest `.csproj`; `<Project>`
   = its file name without extension (= `MSBuildProjectName`). No owning `.csproj` up to the workspace
   root → **exit 2**.
-- **Test-project discovery:** find `<Project>.Tests.csproj` or `<Project>.UnitTests.csproj` whose
-  `<ProjectReference>` closure includes `<Project>.csproj` (validates the mapping in mono-repos).
-  Tie-break: sibling → under a `tests/` dir → nearest by path; `.Tests` over `.UnitTests`. None found
-  → **exit 2**.
+- **Test-project discovery (tiered; see DD6):** among `.csproj` files whose `<ProjectReference>`
+  closure includes `<Project>.csproj` (validates the mapping in mono-repos), pick by tier — **(1)**
+  `<Project>.Tests.csproj` / `<Project>.UnitTests.csproj`, tie-break: sibling → under a `tests/` dir →
+  nearest by path; `.Tests` over `.UnitTests` (unchanged); **(2)** *marked* test projects named
+  `<Project>.*`; **(3)** any *marked* test project. >1 at tier 2 or 3 → **exit 2** (`Multiple test
+  projects`, never a guess). None found → **exit 2**.
 - **Default test command:** `dotnet test <Project>.Tests.csproj --collect:"XPlat Code Coverage"
   --filter "type!=IntegrationTests&Category!=no-mutate" --results-directory <dir> --logger trx`.
   Unit = `type` ∈ {`UnitTests`, `Unit`} or no `type` trait; `IntegrationTests` excluded (VSTest treats

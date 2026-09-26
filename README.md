@@ -226,14 +226,23 @@ Scan: 2 mutation sites in src/Demo/Flag.cs
 
 ## Module & Test Resolution
 
-`mutate4csharp` resolves which tests to run for a target file by convention:
+`mutate4csharp` resolves which tests to run for a target file:
 
 - The **owning project** is the nearest `.csproj` above the target `.cs` file; its file name without
   extension is `<Project>`.
-- The **test project** is `<Project>.Tests.csproj` or `<Project>.UnitTests.csproj` whose project
-  references (transitively) include `<Project>.csproj`. Only that project's tests are run.
-- If no such test project (or no owning `.csproj`) is found, `mutate4csharp` **fails fast with exit
-  `2`** — it never silently reports success with no coverage.
+- The **test project** is a `.csproj` whose project references (transitively) include
+  `<Project>.csproj`, chosen by tier (the first tier with a match wins):
+  1. `<Project>.Tests.csproj` or `<Project>.UnitTests.csproj` (nearest wins);
+  2. a *test project* named `<Project>.*` (e.g. `Foo.BlackBoxTests`, `Foo.Specs`);
+  3. any other *test project*.
+
+  A *test project* sets `<IsTestProject>true</IsTestProject>` or references `Microsoft.NET.Test.Sdk`
+  (unconditioned), in the `.csproj`, a `Directory.Build.props`/`.targets`, or a file it `<Import>`s.
+  Only that project's tests are run. The same rules as `crap4csharp`, so both tools pick the same
+  test project.
+- If no test project (or no owning `.csproj`) is found, or **multiple test projects** tie at tier 2 or
+  3, `mutate4csharp` **fails fast with exit `2`** — it never silently reports success with no coverage,
+  and never guesses.
 - Only **unit tests** run: a test counts as a unit test if its `[Trait("type", …)]` is `UnitTests`,
   `Unit`, or absent; tests marked `[Trait("type", "IntegrationTests")]` are excluded.
 
@@ -242,7 +251,7 @@ Scan: 2 mutation sites in src/Demo/Flag.cs
 The default test command is:
 
 ```text
-dotnet test <Project>.Tests.csproj --collect:"XPlat Code Coverage" --filter "type!=IntegrationTests&Category!=no-mutate"
+dotnet test <TestProject>.csproj --collect:"XPlat Code Coverage" --filter "type!=IntegrationTests&Category!=no-mutate"
 ```
 
 - `type!=IntegrationTests` keeps unit tests (`type` = `UnitTests`, `Unit`, or untagged) and excludes
