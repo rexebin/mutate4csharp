@@ -171,8 +171,18 @@ public sealed class CliExecution
                 _err.Write(
                     "No unit test project found for '"
                     + context.Module.ProjectName
-                    + "'. mutate4csharp requires a matching '.Tests'/'.UnitTests' project that "
-                    + "references it.\n");
+                    + "'. mutate4csharp requires a '.Tests'/'.UnitTests' project, or a test project "
+                    + "(IsTestProject / Microsoft.NET.Test.Sdk), that references it.\n");
+                return 2;
+            case ModuleResolutionStatus.AmbiguousTestProject:
+                _err.Write(
+                    "Multiple test projects reference '"
+                    + context.Module.ProjectName
+                    + "' at the same priority ("
+                    + string.Join(", ", context.Module.AmbiguousTestProjectFiles.Select(Relative))
+                    + "). mutate4csharp runs a single test project; rename the intended one to '"
+                    + context.Module.ProjectName
+                    + ".Tests'.\n");
                 return 2;
             default:
                 return 0;

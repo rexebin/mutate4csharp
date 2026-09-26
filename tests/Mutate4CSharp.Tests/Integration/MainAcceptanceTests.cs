@@ -485,8 +485,8 @@ public sealed class MainAcceptanceTests : IDisposable
         result.ExitCode.Should().Be(2);
         result.StandardOutput.Should().BeEmpty();
         result.StandardError.Should().Be(
-            "No unit test project found for 'Sample'. mutate4csharp requires a matching '.Tests'/'.UnitTests' "
-            + "project that references it.\n");
+            "No unit test project found for 'Sample'. mutate4csharp requires a '.Tests'/'.UnitTests' project, "
+            + "or a test project (IsTestProject / Microsoft.NET.Test.Sdk), that references it.\n");
     }
 
     /// <summary>

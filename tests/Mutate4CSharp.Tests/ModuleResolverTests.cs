@@ -7,10 +7,19 @@ using Microsoft.Mutate4CSharp.Project;
 /// mutate4java's nearest-<c>pom.xml</c> <c>ModuleRootFinder</c>. Covers <c>&lt;Project&gt;</c>
 /// derivation, <c>.Tests</c> vs <c>.UnitTests</c> selection, <c>ProjectReference</c> validation
 /// (a same-named test project for a different production project is rejected), the tie-break order,
-/// and the typed not-found signals.
+/// marker-based test-project discovery (tiers 2/3) with its ambiguity signal, and the typed not-found
+/// signals.
 /// </summary>
 public sealed class ModuleResolverTests : IDisposable
 {
+    private const string IsTestProjectGroup = "<PropertyGroup><IsTestProject>true</IsTestProject></PropertyGroup>";
+
+    private const string TestSdkItemGroup =
+        @"<ItemGroup><PackageReference Include=""Microsoft.NET.Test.Sdk"" Version=""17.8.0"" /></ItemGroup>";
+
+    // From tests/<Name>/ to src/Foo/Foo.csproj.
+    private const string FooReference = @"<ItemGroup><ProjectReference Include=""..\..\src\Foo\Foo.csproj"" /></ItemGroup>";
+
     private readonly string _root;
 
     /// <summary>
@@ -170,6 +179,265 @@ public sealed class ModuleResolverTests : IDisposable
 
         result.Status.Should().Be(ModuleResolutionStatus.NoTestProject);
         result.ProjectFile.Should().Be(FullPath("Foo", "Foo.csproj"));
+    }
+
+    /// <summary>
+    /// A project marked <c>IsTestProject</c> that references the owner resolves even without the
+    /// <c>.Tests</c>/<c>.UnitTests</c> name (tier 3).
+    /// </summary>
+    [Fact]
+    [Trait("type", "UnitTests")]
+    public void DiscoversUnconventionallyNamedProjectMarkedIsTestProject()
+    {
+        WriteProject("src/Foo", "Foo.csproj");
+        string test = WriteRawProject("tests/Acceptance", "Acceptance.csproj", IsTestProjectGroup + FooReference);
+        string source = WriteSource("src/Foo", "Sample.cs");
+
+        ModuleResolution result = Resolve(source);
+
+        result.Status.Should().Be(ModuleResolutionStatus.Resolved);
+        result.TestProjectFile.Should().Be(test);
+    }
+
+    /// <summary>A <c>Microsoft.NET.Test.Sdk</c> package reference marks a test project.</summary>
+    [Fact]
+    [Trait("type", "UnitTests")]
+    public void DiscoversProjectReferencingTestSdkPackage()
+    {
+        WriteProject("src/Foo", "Foo.csproj");
+        string test = WriteRawProject("tests/Specs", "Specs.csproj", TestSdkItemGroup + FooReference);
+        string source = WriteSource("src/Foo", "Sample.cs");
+
+        Resolve(source).TestProjectFile.Should().Be(test);
+    }
+
+    /// <summary>
+    /// The marker may come from an explicitly imported shared <c>.targets</c> file (mutate4csharp's
+    /// own layout).
+    /// </summary>
+    [Fact]
+    [Trait("type", "UnitTests")]
+    public void DiscoversMarkerFromExplicitlyImportedFile()
+    {
+        File.WriteAllText(Path.Combine(_root, "Tests.Common.targets"), $"<Project>{IsTestProjectGroup}</Project>");
+        WriteProject("src/Foo", "Foo.csproj");
+        string test = WriteRawProject(
+            "tests/BlackBox", "BlackBox.csproj", FooReference + @"<Import Project=""..\..\Tests.Common.targets"" />");
+        string source = WriteSource("src/Foo", "Sample.cs");
+
+        Resolve(source).TestProjectFile.Should().Be(test);
+    }
+
+    /// <summary>
+    /// <c>$(MSBuildThisFileDirectory)</c> in an import resolves against the IMPORTING file's directory.
+    /// </summary>
+    [Fact]
+    [Trait("type", "UnitTests")]
+    public void DiscoversMarkerFromImportUsingThisFileDirectoryOfImportingFile()
+    {
+        string shared = Path.Combine(_root, "tests", "shared");
+        Directory.CreateDirectory(shared);
+        File.WriteAllText(Path.Combine(shared, "Test.props"), $"<Project>{TestSdkItemGroup}</Project>");
+        File.WriteAllText(
+            Path.Combine(_root, "tests", "Directory.Build.props"),
+            @"<Project><Import Project=""$(MSBuildThisFileDirectory)shared\Test.props"" /></Project>");
+        WriteProject("src/Foo", "Foo.csproj");
+        string test = WriteRawProject("tests/Scenarios", "Scenarios.csproj", FooReference);
+        string source = WriteSource("src/Foo", "Sample.cs");
+
+        Resolve(source).TestProjectFile.Should().Be(test);
+    }
+
+    /// <summary>The marker may come from a <c>Directory.Build.props</c> above the project.</summary>
+    [Fact]
+    [Trait("type", "UnitTests")]
+    public void DiscoversMarkerFromDirectoryBuildProps()
+    {
+        Directory.CreateDirectory(Path.Combine(_root, "tests"));
+        File.WriteAllText(Path.Combine(_root, "tests", "Directory.Build.props"), $"<Project>{IsTestProjectGroup}</Project>");
+        WriteProject("src/Foo", "Foo.csproj");
+        string test = WriteRawProject("tests/Scenarios", "Scenarios.csproj", FooReference);
+        string source = WriteSource("src/Foo", "Sample.cs");
+
+        Resolve(source).TestProjectFile.Should().Be(test);
+    }
+
+    /// <summary>The marker may come from a <c>Directory.Build.targets</c> above the project.</summary>
+    [Fact]
+    [Trait("type", "UnitTests")]
+    public void DiscoversMarkerFromDirectoryBuildTargets()
+    {
+        Directory.CreateDirectory(Path.Combine(_root, "tests"));
+        File.WriteAllText(Path.Combine(_root, "tests", "Directory.Build.targets"), $"<Project>{TestSdkItemGroup}</Project>");
+        WriteProject("src/Foo", "Foo.csproj");
+        string test = WriteRawProject("tests/Scenarios", "Scenarios.csproj", FooReference);
+        string source = WriteSource("src/Foo", "Sample.cs");
+
+        Resolve(source).TestProjectFile.Should().Be(test);
+    }
+
+    /// <summary>An app/host project that references the owner is not a test project.</summary>
+    [Fact]
+    [Trait("type", "UnitTests")]
+    public void IgnoresReferencingProjectWithoutTestMarker()
+    {
+        WriteProject("src/Foo", "Foo.csproj");
+        WriteProject("src/Foo.Api", "Foo.Api.csproj", "../Foo/Foo.csproj");
+        string source = WriteSource("src/Foo", "Sample.cs");
+
+        Resolve(source).Status.Should().Be(ModuleResolutionStatus.NoTestProject);
+    }
+
+    /// <summary>A conditioned marker cannot be evaluated statically and is ignored (fail-safe).</summary>
+    [Fact]
+    [Trait("type", "UnitTests")]
+    public void IgnoresConditionedMarker()
+    {
+        const string conditionedMarker =
+            @"<PropertyGroup Condition=""'$(CI)'=='true'""><IsTestProject>true</IsTestProject></PropertyGroup>";
+        WriteProject("src/Foo", "Foo.csproj");
+        WriteRawProject("tests/Specs", "Specs.csproj", conditionedMarker + FooReference);
+        string source = WriteSource("src/Foo", "Sample.cs");
+
+        Resolve(source).Status.Should().Be(ModuleResolutionStatus.NoTestProject);
+    }
+
+    /// <summary>An import containing an unsupported <c>$(...)</c> token is skipped (fail-safe).</summary>
+    [Fact]
+    [Trait("type", "UnitTests")]
+    public void SkipsImportWithUnsupportedPropertyToken()
+    {
+        File.WriteAllText(Path.Combine(_root, "Tests.Common.targets"), $"<Project>{IsTestProjectGroup}</Project>");
+        WriteProject("src/Foo", "Foo.csproj");
+        WriteRawProject("tests/Specs", "Specs.csproj", FooReference + @"<Import Project=""$(RepoRoot)Tests.Common.targets"" />");
+        string source = WriteSource("src/Foo", "Sample.cs");
+
+        Resolve(source).Status.Should().Be(ModuleResolutionStatus.NoTestProject);
+    }
+
+    /// <summary>A malformed candidate project is treated as unmarked rather than failing resolution.</summary>
+    [Fact]
+    [Trait("type", "UnitTests")]
+    public void TreatsMalformedImportedFileAsUnmarked()
+    {
+        File.WriteAllText(Path.Combine(_root, "Broken.targets"), "<Project><PropertyGroup>");
+        WriteProject("src/Foo", "Foo.csproj");
+        WriteRawProject("tests/Specs", "Specs.csproj", FooReference + @"<Import Project=""..\..\Broken.targets"" />");
+        string source = WriteSource("src/Foo", "Sample.cs");
+
+        Resolve(source).Status.Should().Be(ModuleResolutionStatus.NoTestProject);
+    }
+
+    /// <summary>An import that points above the workspace root is not followed.</summary>
+    [Fact]
+    [Trait("type", "UnitTests")]
+    public void IgnoresImportedFileAboveWorkspaceRoot()
+    {
+        string outside = Path.Combine(Path.GetDirectoryName(_root)!, Path.GetFileName(_root) + "-outside.targets");
+        File.WriteAllText(outside, $"<Project>{IsTestProjectGroup}</Project>");
+        try
+        {
+            WriteProject("src/Foo", "Foo.csproj");
+            WriteRawProject(
+                "tests/Specs", "Specs.csproj", FooReference + $@"<Import Project=""..\..\..\{Path.GetFileName(outside)}"" />");
+            string source = WriteSource("src/Foo", "Sample.cs");
+
+            Resolve(source).Status.Should().Be(ModuleResolutionStatus.NoTestProject);
+        }
+        finally
+        {
+            File.Delete(outside);
+        }
+    }
+
+    /// <summary>Mutually importing files terminate, and a marker in the cycle is still found.</summary>
+    [Fact]
+    [Trait("type", "UnitTests")]
+    public void TerminatesOnImportCycleAndStillFindsMarker()
+    {
+        File.WriteAllText(Path.Combine(_root, "A.targets"), @"<Project><Import Project=""B.targets"" /></Project>");
+        File.WriteAllText(
+            Path.Combine(_root, "B.targets"), $@"<Project><Import Project=""A.targets"" />{IsTestProjectGroup}</Project>");
+        WriteProject("src/Foo", "Foo.csproj");
+        string test = WriteRawProject("tests/Specs", "Specs.csproj", FooReference + @"<Import Project=""..\..\A.targets"" />");
+        string source = WriteSource("src/Foo", "Sample.cs");
+
+        Resolve(source).TestProjectFile.Should().Be(test);
+    }
+
+    /// <summary>The naming convention (tier 1) wins over a discovered marked project.</summary>
+    [Fact]
+    [Trait("type", "UnitTests")]
+    public void PrefersNamingConventionOverDiscoveredTestProject()
+    {
+        WriteProject("src/Foo", "Foo.csproj");
+        WriteRawProject("tests/Foo.BlackBoxTests", "Foo.BlackBoxTests.csproj", IsTestProjectGroup + FooReference);
+        string conventional = WriteProject("tests/Foo.Tests", "Foo.Tests.csproj", "../../src/Foo/Foo.csproj");
+        string source = WriteSource("src/Foo", "Sample.cs");
+
+        Resolve(source).TestProjectFile.Should().Be(conventional);
+    }
+
+    /// <summary>A marked <c>&lt;Project&gt;.*</c> project (tier 2) wins over other marked projects.</summary>
+    [Fact]
+    [Trait("type", "UnitTests")]
+    public void PrefersProjectNamePrefixOverOtherTestProjects()
+    {
+        WriteProject("src/Foo", "Foo.csproj");
+        WriteRawProject("tests/Acceptance", "Acceptance.csproj", IsTestProjectGroup + FooReference);
+        string prefixed = WriteRawProject(
+            "tests/Foo.BlackBoxTests", "Foo.BlackBoxTests.csproj", IsTestProjectGroup + FooReference);
+        string source = WriteSource("src/Foo", "Sample.cs");
+
+        Resolve(source).TestProjectFile.Should().Be(prefixed);
+    }
+
+    /// <summary>
+    /// Two marked <c>&lt;Project&gt;.*</c> projects tie at tier 2: the typed ambiguity signal carries both,
+    /// ordinal-sorted — never a guess.
+    /// </summary>
+    [Fact]
+    [Trait("type", "UnitTests")]
+    public void SignalsAmbiguityWhenMultiplePrefixedTestProjectsQualify()
+    {
+        WriteProject("src/Foo", "Foo.csproj");
+        string specs = WriteRawProject("tests/Foo.Specs", "Foo.Specs.csproj", IsTestProjectGroup + FooReference);
+        string blackBox = WriteRawProject(
+            "tests/Foo.BlackBoxTests", "Foo.BlackBoxTests.csproj", IsTestProjectGroup + FooReference);
+        string source = WriteSource("src/Foo", "Sample.cs");
+
+        ModuleResolution result = Resolve(source);
+
+        result.Status.Should().Be(ModuleResolutionStatus.AmbiguousTestProject);
+        result.TestProjectFile.Should().BeNull();
+        result.AmbiguousTestProjectFiles.Should().Equal(
+            new[] { specs, blackBox }.OrderBy(path => path, StringComparer.Ordinal));
+    }
+
+    /// <summary>Two marked projects without the prefix tie at tier 3 and signal ambiguity.</summary>
+    [Fact]
+    [Trait("type", "UnitTests")]
+    public void SignalsAmbiguityWhenMultipleUnprefixedTestProjectsQualify()
+    {
+        WriteProject("src/Foo", "Foo.csproj");
+        string acceptance = WriteRawProject("tests/Acceptance", "Acceptance.csproj", IsTestProjectGroup + FooReference);
+        string scenarios = WriteRawProject("tests/Scenarios", "Scenarios.csproj", TestSdkItemGroup + FooReference);
+        string source = WriteSource("src/Foo", "Sample.cs");
+
+        ModuleResolution result = Resolve(source);
+
+        result.Status.Should().Be(ModuleResolutionStatus.AmbiguousTestProject);
+        result.AmbiguousTestProjectFiles.Should().Equal(
+            new[] { acceptance, scenarios }.OrderBy(path => path, StringComparer.Ordinal));
+    }
+
+    private string WriteRawProject(string relativeDir, string fileName, string innerXml)
+    {
+        string directory = Path.Combine(_root, relativeDir.Replace('/', Path.DirectorySeparatorChar));
+        Directory.CreateDirectory(directory);
+        string path = Path.Combine(directory, fileName);
+        File.WriteAllText(path, $"<Project Sdk=\"Microsoft.NET.Sdk\">{innerXml}</Project>");
+        return path;
     }
 
     private ModuleResolution Resolve(string sourceFile)

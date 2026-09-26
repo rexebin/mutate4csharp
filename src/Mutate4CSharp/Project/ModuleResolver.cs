@@ -16,6 +16,11 @@ using System.Xml.Linq;
 /// </summary>
 public sealed class ModuleResolver
 {
+    private const string DirectoryBuildPropsFile = "Directory.Build.props";
+    private const string DirectoryBuildTargetsFile = "Directory.Build.targets";
+    private const string IsTestProjectProperty = "IsTestProject";
+    private const string TestSdkPackage = "Microsoft.NET.Test.Sdk";
+
     private static readonly char[] SeparatorChars = [Path.DirectorySeparatorChar, Path.AltDirectorySeparatorChar];
 
     // Filesystem name/path comparison: case-insensitive on Windows (like the T8 coverage-key
@@ -58,9 +63,154 @@ public sealed class ModuleResolver
 
         string projectName = Path.GetFileNameWithoutExtension(projectFile);
         string? testProjectFile = FindTestProject(projectName, projectFile);
-        return testProjectFile is null
-            ? ModuleResolution.NoTestProject(projectName, projectFile)
-            : ModuleResolution.Resolved(projectName, projectFile, testProjectFile);
+        if (testProjectFile is not null)
+        {
+            return ModuleResolution.Resolved(projectName, projectFile, testProjectFile);
+        }
+
+        // Tiers 2/3 (docs/decisions.md, test-project auto-discovery): marked test projects named
+        // <Project>.* first, then any marked test project. >1 at the winning tier is ambiguous — never a
+        // guess, so mutate4csharp and crap4csharp always agree on (or both refuse) the test project.
+        List<string> discovered =
+        [
+            .. EnumerateProjectFiles()
+                .Where(IsTestProject)
+                .Where(path => ReferencesTransitively(path, projectFile))
+                .OrderBy(path => path, StringComparer.Ordinal),
+        ];
+        List<string> prefixed =
+        [
+            .. discovered.Where(path =>
+                Path.GetFileNameWithoutExtension(path).StartsWith(projectName + ".", PathComparison)),
+        ];
+        List<string> winningTier = prefixed.Count > 0 ? prefixed : discovered;
+        return winningTier.Count switch
+        {
+            0 => ModuleResolution.NoTestProject(projectName, projectFile),
+            1 => ModuleResolution.Resolved(projectName, projectFile, winningTier[0]),
+            _ => ModuleResolution.AmbiguousTestProject(projectName, projectFile, winningTier),
+        };
+    }
+
+    // A project is a test project when an UNCONDITIONED <IsTestProject>true</IsTestProject> or an
+    // UNCONDITIONED <PackageReference Include="Microsoft.NET.Test.Sdk"> appears in the .csproj, in a
+    // Directory.Build.props/.targets between it and the workspace root, or in any file those <Import>,
+    // recursively (visited set => cycles terminate). Conditioned markers cannot be evaluated statically and
+    // are ignored (fail-safe). Missing/malformed files contribute nothing.
+    private bool IsTestProject(string projectFile)
+    {
+        HashSet<string> visited = new(PathComparer);
+        Stack<string> pending = new(
+            DirectoryBuildChain(projectFile, DirectoryBuildPropsFile)
+                .Concat(DirectoryBuildChain(projectFile, DirectoryBuildTargetsFile))
+                .Append(projectFile));
+
+        while (pending.Count > 0)
+        {
+            string file = pending.Pop();
+            if (!visited.Add(file))
+            {
+                continue;
+            }
+
+            XElement? root = TryLoadSecure(file)?.Root;
+            if (root is null)
+            {
+                continue;
+            }
+
+            if (HasTestMarker(root))
+            {
+                return true;
+            }
+
+            foreach (string import in ImportedFiles(file, root, projectFile))
+            {
+                pending.Push(import);
+            }
+        }
+
+        return false;
+    }
+
+    private static bool HasTestMarker(XElement project)
+    {
+        foreach (XElement group in project.Elements().Where(IsUnconditioned))
+        {
+            string kind = group.Name.LocalName;
+            bool marked =
+                (string.Equals(kind, "PropertyGroup", StringComparison.OrdinalIgnoreCase)
+                    && group.Elements().Where(IsUnconditioned).Any(property =>
+                        string.Equals(property.Name.LocalName, IsTestProjectProperty, StringComparison.OrdinalIgnoreCase)
+                        && string.Equals(property.Value.Trim(), "true", StringComparison.OrdinalIgnoreCase)))
+                || (string.Equals(kind, "ItemGroup", StringComparison.OrdinalIgnoreCase)
+                    && group.Elements().Where(IsUnconditioned).Any(item =>
+                        string.Equals(item.Name.LocalName, "PackageReference", StringComparison.OrdinalIgnoreCase)
+                        && string.Equals(item.Attribute("Include")?.Value, TestSdkPackage, StringComparison.OrdinalIgnoreCase)));
+            if (marked)
+            {
+                return true;
+            }
+        }
+
+        return false;
+    }
+
+    private static bool IsUnconditioned(XElement element) => element.Attribute("Condition") is null;
+
+    // <Import Project="..."> targets of importingFile. Only $(MSBuildThisFileDirectory) (the IMPORTING file's
+    // directory, trailing separator) and $(MSBuildProjectDirectory) are expanded; any other $(...) token means
+    // the import is skipped (fail-safe). The Import's own Condition is not evaluated: it is followed iff the
+    // resolved file exists inside the workspace.
+    private IEnumerable<string> ImportedFiles(string importingFile, XElement project, string projectFile)
+    {
+        string importingDirectory = Path.GetDirectoryName(importingFile)!;
+        string projectDirectory = Path.GetDirectoryName(projectFile)!;
+        foreach (XElement element in project.Descendants()
+                     .Where(node => string.Equals(node.Name.LocalName, "Import", StringComparison.OrdinalIgnoreCase)))
+        {
+            string? path = element.Attribute("Project")?.Value;
+            if (string.IsNullOrWhiteSpace(path))
+            {
+                continue;
+            }
+
+            string expanded = path
+                .Replace("$(MSBuildThisFileDirectory)", importingDirectory + Path.DirectorySeparatorChar, StringComparison.OrdinalIgnoreCase)
+                .Replace("$(MSBuildProjectDirectory)", projectDirectory, StringComparison.OrdinalIgnoreCase);
+            if (expanded.Contains("$(", StringComparison.Ordinal))
+            {
+                continue;
+            }
+
+            string relative = expanded
+                .Replace('\\', Path.DirectorySeparatorChar)
+                .Replace('/', Path.DirectorySeparatorChar);
+            string resolved = Path.GetFullPath(Path.Combine(importingDirectory, relative));
+            if (IsWithinWorkspace(resolved) && File.Exists(resolved))
+            {
+                yield return resolved;
+            }
+        }
+    }
+
+    // Every file named fileName from the project's own directory up to (and including) the workspace root.
+    private List<string> DirectoryBuildChain(string projectFile, string fileName)
+    {
+        List<string> chain = [];
+        string? directory = Path.GetDirectoryName(projectFile);
+        while (directory is not null && IsWithinWorkspace(directory))
+        {
+            string candidate = Path.Combine(directory, fileName);
+            if (File.Exists(candidate))
+            {
+                chain.Add(candidate);
+            }
+
+            directory = Path.GetDirectoryName(directory);
+        }
+
+        return chain;
     }
 
     private string? FindOwningProject(string target)
@@ -304,5 +454,24 @@ public sealed class ModuleResolver
         using FileStream stream = File.OpenRead(projectFile);
         using XmlReader reader = XmlReader.Create(stream, settings);
         return XDocument.Load(reader);
+    }
+
+    // Marker probes must never abort resolution: a missing or malformed file (mid-edit, merge markers,
+    // truncated) yields null. XmlException only; genuine I/O faults still propagate.
+    private static XDocument? TryLoadSecure(string file)
+    {
+        if (!File.Exists(file))
+        {
+            return null;
+        }
+
+        try
+        {
+            return LoadSecure(file);
+        }
+        catch (XmlException)
+        {
+            return null;
+        }
     }
 }

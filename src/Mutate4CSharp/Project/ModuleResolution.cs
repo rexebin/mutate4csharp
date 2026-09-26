@@ -14,10 +14,16 @@ public enum ModuleResolutionStatus
     NoOwningProject,
 
     /// <summary>
-    /// The owning project was found, but no <c>&lt;Project&gt;.Tests</c>/<c>.UnitTests</c> project whose
-    /// project-reference closure includes it could be discovered.
+    /// The owning project was found, but no test project (conventionally named or discovered) whose
+    /// project-reference closure includes it could be found.
     /// </summary>
     NoTestProject,
+
+    /// <summary>
+    /// The owning project was found, but more than one discovered (non-conventionally named) test project
+    /// ties at the winning tier; the resolver never guesses between them.
+    /// </summary>
+    AmbiguousTestProject,
 }
 
 /// <summary>
@@ -30,12 +36,17 @@ public enum ModuleResolutionStatus
 public sealed record ModuleResolution
 {
     private ModuleResolution(
-        ModuleResolutionStatus status, string? projectName, string? projectFile, string? testProjectFile)
+        ModuleResolutionStatus status,
+        string? projectName,
+        string? projectFile,
+        string? testProjectFile,
+        IReadOnlyList<string>? ambiguousTestProjectFiles = null)
     {
         Status = status;
         ProjectName = projectName;
         ProjectFile = projectFile;
         TestProjectFile = testProjectFile;
+        AmbiguousTestProjectFiles = ambiguousTestProjectFiles ?? [];
     }
 
     /// <summary>Gets the resolution outcome kind.</summary>
@@ -61,6 +72,12 @@ public sealed record ModuleResolution
     /// </summary>
     public string? TestProjectFile { get; }
 
+    /// <summary>
+    /// Gets the ordinal-sorted absolute paths of the tied test projects when the status is
+    /// <see cref="ModuleResolutionStatus.AmbiguousTestProject"/>; empty otherwise.
+    /// </summary>
+    public IReadOnlyList<string> AmbiguousTestProjectFiles { get; }
+
     /// <summary>Creates a resolved outcome.</summary>
     /// <param name="projectName">The derived production project name.</param>
     /// <param name="projectFile">The absolute path to the owning <c>.csproj</c>.</param>
@@ -80,4 +97,13 @@ public sealed record ModuleResolution
     /// <returns>A <see cref="ModuleResolutionStatus.NoTestProject"/> result.</returns>
     public static ModuleResolution NoTestProject(string projectName, string projectFile) =>
         new(ModuleResolutionStatus.NoTestProject, projectName, projectFile, null);
+
+    /// <summary>Creates an outcome for tied discovered test projects.</summary>
+    /// <param name="projectName">The derived production project name.</param>
+    /// <param name="projectFile">The absolute path to the owning <c>.csproj</c>.</param>
+    /// <param name="candidates">The ordinal-sorted absolute paths of the tied test projects.</param>
+    /// <returns>A <see cref="ModuleResolutionStatus.AmbiguousTestProject"/> result.</returns>
+    public static ModuleResolution AmbiguousTestProject(
+        string projectName, string projectFile, IReadOnlyList<string> candidates) =>
+        new(ModuleResolutionStatus.AmbiguousTestProject, projectName, projectFile, null, candidates);
 }

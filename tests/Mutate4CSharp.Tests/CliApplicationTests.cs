@@ -687,6 +687,37 @@ public sealed class CliApplicationTests : IDisposable
         error.ToString().Should().Contain("No unit test project found for 'Solo'");
     }
 
+    /// <summary>
+    /// Two discovered test projects tie at the same tier: fails fast with exit two, naming both, and the
+    /// source is left untouched.
+    /// </summary>
+    [Fact]
+    [Trait("type", "UnitTests")]
+    public void FailsFastWithExitTwoWhenMultipleTestProjectsQualify()
+    {
+        WriteProject("src/Solo", "Solo.csproj");
+        const string marked =
+            @"<Project><PropertyGroup><IsTestProject>true</IsTestProject></PropertyGroup><ItemGroup><ProjectReference Include=""../../src/Solo/Solo.csproj"" /></ItemGroup></Project>";
+        foreach (string name in new[] { "Solo.Specs", "Solo.BlackBoxTests" })
+        {
+            string directory = Path.Combine(_tempDir, "tests", name);
+            Directory.CreateDirectory(directory);
+            File.WriteAllText(Path.Combine(directory, name + ".csproj"), marked);
+        }
+
+        string file = WriteSource("src/Solo", "Solo.cs", OriginalSource);
+        StringWriter error = new();
+
+        int exit = Application(new StringWriter(), error, new StubExecutor(), new StubCoverageRunner(EmptyCoverage()))
+            .Execute([Relative(file)]);
+
+        exit.Should().Be(2);
+        error.ToString().Should().Contain("Multiple test projects")
+            .And.Contain("Solo.Specs.csproj")
+            .And.Contain("Solo.BlackBoxTests.csproj");
+        StrippedSource(file).Should().Be(OriginalSource);
+    }
+
     /// <summary>DD2(b): a green baseline that executed zero unit tests fails fast with exit two.</summary>
     [Fact]
     [Trait("type", "UnitTests")]
